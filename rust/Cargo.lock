@@ -4069,6 +4069,7 @@ dependencies = [
  "arc-swap",
  "async-stream",
  "axum",
+ "blake3",
  "bytemuck",
  "bytes",
  "chrono",
