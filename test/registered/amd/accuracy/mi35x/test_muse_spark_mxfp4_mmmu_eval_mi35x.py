@@ -112,19 +112,48 @@ class TestMuseSparkMXFP4MMMUEvalMI35x(CustomTestCase):
             env={**os.environ, **COOKBOOK_ENV},
         )
         try:
-            metrics = run_eval(
-                SimpleNamespace(
-                    base_url=base_url,
-                    model=MUSE_SPARK_MODEL_PATH,
-                    eval_name="mmmu",
-                    num_examples=100,
-                    num_threads=MAX_RUNNING_REQUESTS,
-                    max_tokens=65536,
-                    temperature=1.0,
-                    top_p=1.0,
-                    chat_template_kwargs={"reasoning_effort": "xhigh"},
+            # EXPERIMENT (not for merge): full MMMU validation set, twice, with
+            # per-sample scores dumped so subset sizes can be simulated offline.
+            import json
+            import time
+
+            import sglang.test.simple_eval_mmmu_vlm as mmmu_mod
+
+            orig_map = mmmu_mod.map_with_progress
+            captured = {}
+
+            def capturing_map(f, xs, num_threads):
+                res = orig_map(f, xs, num_threads)
+                captured["rows"] = [
+                    (x["id"], x["category"], r.score) for x, r in zip(xs, res)
+                ]
+                return res
+
+            mmmu_mod.map_with_progress = capturing_map
+            for rep in range(2):
+                t0 = time.time()
+                metrics = run_eval(
+                    SimpleNamespace(
+                        base_url=base_url,
+                        model=MUSE_SPARK_MODEL_PATH,
+                        eval_name="mmmu",
+                        num_examples=None,
+                        num_threads=MAX_RUNNING_REQUESTS,
+                        max_tokens=65536,
+                        temperature=1.0,
+                        top_p=1.0,
+                        chat_template_kwargs={"reasoning_effort": "xhigh"},
+                    )
                 )
-            )
+                wall = time.time() - t0
+                rows = captured["rows"]
+                print(
+                    f"MMMU_EXP rep={rep} n={len(rows)} wall={wall:.1f} "
+                    f"latency={metrics.get('latency')} score={metrics['score']:.4f} "
+                    f"exact={sum(r[2] for r in rows) / len(rows):.4f}",
+                    flush=True,
+                )
+                print(f"MMMU_EXP_ROWS rep={rep} " + json.dumps(rows), flush=True)
         finally:
             kill_process_tree(process.pid)
 
