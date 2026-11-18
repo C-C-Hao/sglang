@@ -22,6 +22,7 @@ from sglang.kernels.ops.attention.trtllm_mha_page_table import (
 )
 from sglang.kernels.ops.attention.utils import assert_buffer_fits
 from sglang.srt.configs.model_config import AttentionArch
+from sglang.srt.environ import envs
 from sglang.srt.layers.attention.base_attn_backend import (
     AttentionBackend,
 )
@@ -106,6 +107,17 @@ def _load_fa4_kernels(device_capability):
 
 def _should_disable_scheduler_metadata_precompute() -> bool:
     return bool(get_parallel().enable_prefill_cp or get_parallel().attn_dp_enabled)
+
+
+def _reshape_q(q: torch.Tensor, num_heads: int, head_dim: int) -> torch.Tensor:
+    if envs.SGLANG_DISABLE_ZERO_COPY_Q.get():
+        return q.contiguous().view(-1, num_heads, head_dim)
+    if q.ndim == 2 and q.stride(-1) == 1:
+        return q.view(q.shape[0], num_heads, head_dim)
+    if q.ndim == 3 and q.shape[1:] == (num_heads, head_dim) and q.stride(-1) == 1:
+        return q
+    q = q.reshape(-1, num_heads, head_dim)
+    return q if q.stride(-1) == 1 else q.contiguous()
 
 
 @dataclass
@@ -1940,7 +1952,7 @@ class FlashAttentionBackend(AttentionBackend):
                     else:
                         metadata.fa_skip_cu_seqlens_q = cu_seqlens_q
                         metadata.fa_skip_max_seqlen_q = max_seqlen_q
-                q = q.contiguous().view(-1, layer.tp_q_head_num, layer.head_dim)
+                q = _reshape_q(q, layer.tp_q_head_num, layer.head_dim)
                 result = self.flash_attn_varlen_func(
                     q=q,
                     k=k.view(-1, layer.tp_k_head_num, layer.head_dim),
@@ -1959,7 +1971,7 @@ class FlashAttentionBackend(AttentionBackend):
                     ver=ver,
                 )
             else:
-                q = q.contiguous().view(-1, layer.tp_q_head_num, layer.head_dim)
+                q = _reshape_q(q, layer.tp_q_head_num, layer.head_dim)
                 result = self.flash_attn_with_kvcache(
                     q=q,
                     k_cache=key_cache,
@@ -2439,9 +2451,7 @@ class FlashAttentionBackend(AttentionBackend):
                     window_size = (-1, -1)
                     pa_swa_active = True
 
-                q_reshaped = q.contiguous().view(
-                    -1, layer.tp_q_head_num, layer.head_dim
-                )
+                q_reshaped = _reshape_q(q, layer.tp_q_head_num, layer.head_dim)
 
                 # Default: single-token self-attention
                 # Use precomputed scheduler_metadata when available and applicable.

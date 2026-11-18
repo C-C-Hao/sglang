@@ -28,6 +28,7 @@ from sglang.srt.batch_invariant_ops import is_batch_invariant_mode_enabled
 from sglang.srt.distributed.device_communicators.pynccl_allocator import (
     use_symmetric_memory,
 )
+from sglang.srt.environ import envs
 from sglang.srt.layers.dp_attention import is_allocation_symmetric
 from sglang.srt.layers.moe.moe_runner import MoeRunnerConfig
 from sglang.srt.layers.moe.utils import (
@@ -544,6 +545,43 @@ def _prepare_fused_moe_run(
     )
 
 
+def _should_use_fused_moe_sum_all_reduce(
+    *,
+    num_tokens: int,
+    topk: int,
+    no_combine: bool,
+    defer_sum: bool,
+    use_int8_w8a16: bool,
+    use_int4_w4a16: bool,
+    hooks: Any,
+) -> bool:
+    if not (_is_cuda or _is_musa or _is_hip):
+        return False
+    if not get_exec().moe.enable_fused_moe_sum_all_reduce:
+        return False
+    if (
+        is_batch_invariant_mode_enabled()
+        or get_exec().deterministic.enable_deterministic_inference
+    ):
+        return False
+    if (
+        no_combine
+        or defer_sum
+        or topk <= 2
+        or use_int8_w8a16
+        or use_int4_w4a16
+        or (hooks and hooks.after_down is not None)
+    ):
+        return False
+    min_tokens = envs.SGLANG_FUSED_MOE_SUM_ALL_REDUCE_MIN_TOKENS.get()
+    max_tokens = envs.SGLANG_FUSED_MOE_SUM_ALL_REDUCE_MAX_TOKENS.get()
+    if num_tokens < min_tokens:
+        return False
+    if max_tokens > 0 and num_tokens > max_tokens:
+        return False
+    return True
+
+
 def _fused_moe_kernel_sequence(
     hidden_states: torch.Tensor,
     w1: torch.Tensor,
@@ -659,14 +697,14 @@ def _fused_moe_kernel_sequence(
         ):
             out_hidden_states = torch.empty_like(hidden_states)
 
-    use_fused_moe_sum_all_reduce = (
-        get_exec().moe.enable_fused_moe_sum_all_reduce
-        and (not no_combine)
-        and (not defer_sum)
-        and (topk > 2)
-        and (not use_int8_w8a16)
-        and (not use_int4_w4a16)
-        and (not (hooks and hooks.after_down is not None))
+    use_fused_moe_sum_all_reduce = _should_use_fused_moe_sum_all_reduce(
+        num_tokens=num_tokens,
+        topk=topk,
+        no_combine=no_combine,
+        defer_sum=defer_sum,
+        use_int8_w8a16=use_int8_w8a16,
+        use_int4_w4a16=use_int4_w4a16,
+        hooks=hooks,
     )
 
     if fuse_swiglu_interleaved:
@@ -934,10 +972,14 @@ def _fused_moe_kernel_sequence(
 
     del intermediate_cache1
 
-    intermediate_cache3 = torch.empty(
-        (num_tokens, topk, w2.shape[1]),
-        device=hidden_states.device,
-        dtype=hidden_states.dtype,
+    intermediate_cache3 = (
+        None
+        if use_fused_moe_sum_all_reduce
+        else torch.empty(
+            (num_tokens, topk, w2.shape[1]),
+            device=hidden_states.device,
+            dtype=hidden_states.dtype,
+        )
     )
 
     # LoRA hooks force the second kernel to write to intermediate_cache3 so
@@ -945,6 +987,7 @@ def _fused_moe_kernel_sequence(
     # scaling also needs the intermediate because the reduction applies it.
     _use_intermediate = defer_sum or (
         not no_combine
+        and not use_fused_moe_sum_all_reduce
         and (topk != 1 or hooks or routed_scaling_factor not in (None, 1.0))
     )
 
@@ -1035,7 +1078,7 @@ def _fused_moe_kernel_sequence(
 
 
 def moe_combine_topk(
-    intermediate_cache3: torch.Tensor,
+    intermediate_cache3: Optional[torch.Tensor],
     out_hidden_states: torch.Tensor,
     routed_scaling_factor: Optional[float],
     no_combine: bool = False,
@@ -1045,18 +1088,21 @@ def moe_combine_topk(
 ) -> torch.Tensor:
     """Sum the routed-weighted ``[num_tokens, topk, hidden]`` expert outputs into
     ``out_hidden_states`` (the tail of ``_fused_moe_kernel_sequence``)."""
-    num_tokens, topk = intermediate_cache3.shape[:2]
-
     if routed_scaling_factor is None:
         routed_scaling_factor = 1.0
 
     if no_combine:
-        pass
-    elif use_fused_moe_sum_all_reduce:
+        return out_hidden_states
+    if use_fused_moe_sum_all_reduce:
         if routed_scaling_factor != 1.0 and not _use_aiter:
             assert out_slice is not None
             out_slice.mul_(routed_scaling_factor)
-    elif _is_cuda or _is_musa:
+        return out_hidden_states
+
+    assert intermediate_cache3 is not None
+    num_tokens, topk = intermediate_cache3.shape[:2]
+
+    if _is_cuda or _is_musa:
         if topk == 1 and routed_scaling_factor == 1.0 and not _use_intermediate:
             pass  # we wrote directly into out_hidden_states
         elif topk == 2 and routed_scaling_factor == 1.0:

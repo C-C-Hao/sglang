@@ -1629,6 +1629,11 @@ class Envs:
     # The [M*top_k, hidden] HBM round trip pays only at small M; 0 disables.
     # GLM-5.2 (H=6144): neutral at 192 on B300 TP8, crossover 192-223 on GB300 TP4.
     SGLANG_MOE_DEFERRED_FINALIZE_MAX_TOKENS = EnvInt(192)
+    # Token-count band [min, max] for --enable-fused-moe-sum-all-reduce:
+    # M < 2 serializes top-k CTAs on one output row; M > 256 floods L2 ROPs
+    # during prefill. Set MAX_TOKENS <= 0 to remove the upper bound.
+    SGLANG_FUSED_MOE_SUM_ALL_REDUCE_MIN_TOKENS = EnvInt(2)
+    SGLANG_FUSED_MOE_SUM_ALL_REDUCE_MAX_TOKENS = EnvInt(256)
     # Let the CuTe DSL fused MoE finalize consume expert-parallel handoffs.
     # Unset follows the NVIDIA runtime master; an explicit value wins.
     SGLANG_OPT_CUTEDSL_EP_DEFERRED_FINALIZE = EnvBool(
@@ -1678,6 +1683,9 @@ class Envs:
     SGLANG_MINICPM_FORCE_DENSE = EnvBool(False)
 
     SGLANG_USE_SGL_FA3_KERNEL = EnvBool(True)
+    # Materialize a contiguous Q copy before FlashAttention instead of passing a
+    # zero-copy strided view when stride(-1) == 1.
+    SGLANG_DISABLE_ZERO_COPY_Q = EnvBool(False)
     # Force every sglang.kernels BaseFusedOp onto one backend (a KernelBackend
     # value, e.g. "torch" / "torch_compile" / "triton" / "helion" / "aot"); unset =
     # auto-select by priority. "torch" flips all fused ops to their pure-torch
@@ -1724,6 +1732,10 @@ class Envs:
     # See docs/references/environment_variables.
     SGLANG_ENABLE_PCIE_IPC_ALLREDUCE = EnvBool(False)
     SGLANG_PCIE_IPC_MAX_NUMEL = EnvInt(0)
+    # Bypass FlashInfer/Aiter all-reduce + residual + RMSNorm fusion at the
+    # post-MoE (attn_input) boundary while keeping post-attention (ffn_input)
+    # fused, falling back to standalone CustomAllReduce + FusedAddRMSNorm.
+    SGLANG_DISABLE_POST_MOE_ALLREDUCE_FUSION = EnvBool(False)
 
     # ===================================================================
     # RoPE cache

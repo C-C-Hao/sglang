@@ -20,6 +20,7 @@ from typing import Callable, Optional, Tuple
 
 import torch
 
+from sglang.srt.environ import envs
 from sglang.srt.layers.layer_boundary.contracts import FfnInputFusion
 from sglang.srt.layers.layer_boundary.layout import SumGroup
 from sglang.srt.layers.layer_boundary.output import UnreducedOutput
@@ -58,7 +59,10 @@ def attn_input_fusions(plan, read=NORM_QUANT_READOUT) -> Tuple[Callable, ...]:
     plainly; the boundary tries them only when the update it writes in is a
     plain add. A backend's come first."""
     given = plan.fusions.attn_input_fusions(plan) if plan.fusions else ()
-    if not hasattr(plan.norm, "forward_with_allreduce_fusion"):
+    if (
+        not hasattr(plan.norm, "forward_with_allreduce_fusion")
+        or envs.SGLANG_DISABLE_POST_MOE_ALLREDUCE_FUSION.get()
+    ):
         return given
     fuses_quant = (
         isinstance(read, NormQuantReadout)
@@ -99,6 +103,7 @@ def fused_attn_input(
         or post_residual_addition is not None
         # The kernel reduces over the MoE output's group.
         or owed.group is not post_experts_reduction_group()
+        or envs.SGLANG_DISABLE_POST_MOE_ALLREDUCE_FUSION.get()
     ):
         return None
     hidden_states = owed.partial

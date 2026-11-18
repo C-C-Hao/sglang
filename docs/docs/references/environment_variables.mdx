@@ -272,6 +272,16 @@ SGLang supports various environment variables that can be used to configure its 
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>Use the sgl-fa3 wheel implementation for FlashAttention v3 instead of the kernels-hub build</td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}><code>true</code></td>
     </tr>
+    <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_FUSED_MOE_SUM_ALL_REDUCE_MIN_TOKENS</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>Minimum token count for <code>--enable-fused-moe-sum-all-reduce</code> (avoids <code>M = 1</code> single-row L2 atomic serialization)</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}><code>2</code></td>
+    </tr>
+    <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_FUSED_MOE_SUM_ALL_REDUCE_MAX_TOKENS</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>Maximum token count for <code>--enable-fused-moe-sum-all-reduce</code> (avoids prefill L2 atomic contention). Set <code>&lt;= 0</code> to remove the upper bound</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}><code>256</code></td>
+    </tr>
 </tbody>
 </table>
 
@@ -978,6 +988,11 @@ SGLang supports various environment variables that can be used to configure its 
       <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_ENABLE_KV_SHARD_ZERO_SM_GATHER</code></td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>With <code>--enable-kv-cache-sharding</code>, allocate the prefix gather scratch of single-node shard groups with PyTorch symmetric memory and run the all-gather on copy engines (zero SMs) through its CUDA multicast mapping, in chunks that a foreground NVLink transfer pause can stop. GPUs without multicast, <code>--enable-memory-saver</code>, and <code>SGLANG_MOONCAKE_CUSTOM_MEM_POOL</code> keep the NCCL all-gather. Set to <code>false</code> to keep the NCCL all-gather.</td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}><code>true</code></td>
+    </tr>
+    <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DISABLE_POST_MOE_ALLREDUCE_FUSION</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>Disable FlashInfer/Aiter AllReduce+Residual+RMSNorm fusion at the post-MoE boundary while keeping post-attention fusion enabled, allowing standalone reductions to fall back to CustomAllReduce + FusedAddRMSNorm</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}><code>false</code></td>
     </tr>
   </tbody>
 </table>
@@ -1734,6 +1749,11 @@ SGLang supports various environment variables that can be used to configure its 
     <tr>
       <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_ENABLE_FUSED_KDA_OUTPUT_QUANT</code></td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>Fuse the KDA output gated RMSNorm with per-token-group FP8 quantization for small-M target-verify batches feeding a blockwise-FP8 output projection. Takes effect only on SM90 with <code>SGLANG_ENABLE_FP8_BLOCK_GEMV=1</code>; otherwise it stays off.</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}><code>false</code></td>
+    </tr>
+    <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DISABLE_ZERO_COPY_Q</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>Materialize a contiguous Q copy before FlashAttention instead of passing a zero-copy strided view when <code>stride(-1) == 1</code></td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}><code>false</code></td>
     </tr>
   </tbody>
