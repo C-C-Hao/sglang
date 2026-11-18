@@ -23,10 +23,10 @@ on:
         required: true
         type: string
       ref:
-        description: "Branch, tag, or commit to build (e.g. router-v0.1.0 or main)"
+        description: "Branch, tag, or commit to build; only honored with a non-production image_repo (default main). A release to lmsysorg/sgl-router always builds the router-v<version> tag."
         required: false
         type: string
-        default: "main"
+        default: ""
       image_repo:
         description: "Docker Hub repo to push to. Use lmsysorg/sglang-staging for testing."
         required: false
@@ -56,29 +56,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      version: ${{ steps.resolve.outputs.version }}
+      version: ${{ steps.tags.outputs.version }}
       ref: ${{ steps.resolve.outputs.ref }}
-      tags: ${{ steps.resolve.outputs.tags }}
+      tags: ${{ steps.tags.outputs.tags }}
     steps:
-      - name: Checkout the release ref
-        uses: actions/checkout@v4
-        with:
-          # Empty: the event's own ref (tag push, pull request).
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || '' }}
-          persist-credentials: false
-
-      - name: Resolve version and tags
+      # Before the checkout: the ref is decided here, not taken from the event.
+      - name: Resolve version, ref and tags
         id: resolve
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_REF: ${{ inputs.ref }}
+          INPUT_IMAGE_REPO: ${{ inputs.image_repo }}
           INPUT_PUSH_LATEST: ${{ inputs.push_latest }}
         run: |
-          # First `version = "..."` after [package]; the [workspace] table above it has none.
-          crate_version=$(sed -n '/^\[package\]/,/^\[/{s/^version *= *"\([^"]*\)".*/\1/p;}' sgl-router/Cargo.toml | head -n1)
-          echo "sgl-router/Cargo.toml is at ${crate_version:-<unparsed>}"
           case "$EVENT_NAME" in
             push)
               version=${REF_NAME#router-v}
@@ -88,11 +80,22 @@ jobs:
             workflow_dispatch)
               version=${INPUT_VERSION#router-v}
               version=${version#v}
-              ref=$INPUT_REF
               push_latest=$INPUT_PUSH_LATEST
+              if [[ "${INPUT_IMAGE_REPO:-lmsysorg/sgl-router}" == "lmsysorg/sgl-router" ]]; then
+                # A release is the tagged commit, never a branch: the crate version
+                # stays the same between releases, so main at 0.1.0 is not v0.1.0.
+                # Like release-docker.yml, which checks out refs/tags/v<version>.
+                ref="refs/tags/router-v${version}"
+                if [[ -n "$INPUT_REF" && "$INPUT_REF" != "router-v${version}" && "$INPUT_REF" != "$ref" ]]; then
+                  echo "::error::ref '$INPUT_REF' is only honored with a non-production image_repo; a release to lmsysorg/sgl-router builds $ref."
+                  exit 1
+                fi
+              else
+                ref=${INPUT_REF:-main}
+              fi
               ;;
             pull_request)
-              version=$crate_version
+              version=""
               ref=""
               push_latest=false
               ;;
@@ -101,23 +104,47 @@ jobs:
               exit 1
               ;;
           esac
-          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.]+)?$ ]]; then
+          if [[ -n "$version" ]] && ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.]+)?$ ]]; then
             echo "::error::Invalid version '$version' (expected X.Y.Z, optionally with a pre-release suffix)"
             exit 1
           fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "push_latest=$push_latest" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout the release ref
+        uses: actions/checkout@v4
+        with:
+          # Empty: the event's own ref (tag push, pull request). A missing
+          # router-v<version> tag fails here.
+          ref: ${{ steps.resolve.outputs.ref }}
+          persist-credentials: false
+
+      - name: Match the version to the crate and set the image tags
+        id: tags
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+          REF: ${{ steps.resolve.outputs.ref }}
+          PUSH_LATEST: ${{ steps.resolve.outputs.push_latest }}
+        run: |
+          # First `version = "..."` after [package]; the [workspace] table above it has none.
+          crate_version=$(sed -n '/^\[package\]/,/^\[/{s/^version *= *"\([^"]*\)".*/\1/p;}' sgl-router/Cargo.toml | head -n1)
+          echo "sgl-router/Cargo.toml is at ${crate_version:-<unparsed>}"
+          # Pull requests build whatever the crate says.
+          version=${VERSION:-$crate_version}
           if [[ "$version" != "$crate_version" ]]; then
             echo "::error::Releasing $version, but sgl-router/Cargo.toml is at $crate_version. Bump the crate (and Cargo.lock) first."
             exit 1
           fi
           tags="v${version}"
           # A pre-release (0.2.0-rc1) never moves :latest, even on a tag push.
-          if [[ "$push_latest" == "true" && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ "$PUSH_LATEST" == "true" && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             tags="${tags} latest"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "tags=$tags" >> "$GITHUB_OUTPUT"
-          echo "Building sgl-router $version from ${ref:-$GITHUB_SHA} with tags: $tags (push: $([[ $EVENT_NAME == pull_request ]] && echo no || echo yes))"
+          echo "Building sgl-router $version from ${REF:-$GITHUB_SHA} with tags: $tags (push: $([[ $EVENT_NAME == pull_request ]] && echo no || echo yes))"
 
   docker:
     needs: verify
